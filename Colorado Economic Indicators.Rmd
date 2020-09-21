@@ -1,0 +1,1222 @@
+---
+title: "Colorado Economic Indicators"
+author: "Jacob Dubbert"
+date: "9/20/2020"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    social: menu
+    source_code: embed
+    theme: cerulean
+---
+
+```{r setup, include=FALSE,cache=T}
+library(flexdashboard)
+library(tidyverse)
+library(tidyquant)
+library(viridis)
+library(scales)
+library(tibbletime)
+library(data.table)
+library(rlang)
+library(ggridges)
+library(ggbeeswarm)
+library(bea.R)
+library(ggthemes)
+library(lubridate)
+library(data.table)
+library(fredr)
+library(gganimate)
+library(gifski)
+library(tweenr)
+library(plotly)
+library(directlabels)
+library(quantmod)
+library(rvest)
+library(bsplus)
+library(crosstalk)
+library(sqldf)
+library(DT)
+library(highcharter)
+library(glue)
+library(htmltools)
+library(blscrapeR)
+library(blsAPI)
+```
+
+
+Colorado Jobless Claims {data-navmenu="Employment"}
+=======================================================================
+
+```{r}
+fredr_set_key("ffc1bf6b9d464d1bc812144a01af9850")
+# replace YOUR_KEY with the key FRED gives you
+#################################################
+# get and wrangle data
+
+# Seasonally adjusted weekly claims
+ICSA<- 
+fredr(
+  series_id = "ICSA",
+  observation_start = as.Date("1967-01-01")
+)
+
+# Non seasonally adjusted weekly claims
+ICNSA<-
+fredr(
+  series_id = "ICNSA",
+  observation_start = as.Date("1967-01-01")
+)
+
+# Monthly US Labor Force (Seasonally Adjusted)
+CLF16OV <- 
+fredr(
+  series_id = "CLF16OV",
+  observation_start = as.Date("1967-01-01")
+)
+
+
+# Monthly Nonfarm Payroll employment (seasonally adjusted)
+# used later
+PAYEMS<-
+fredr(
+  series_id = "PAYEMS",
+  observation_start = as.Date("1948-01-01")
+)
+
+# wrangle data ----
+
+df <- 
+  left_join(ICNSA %>% pivot_wider(names_from=series_id,values_from=value),
+            ICSA %>% pivot_wider(names_from=series_id,values_from=value),
+            by="date") %>%
+  mutate(year=year(date),month=month(date))
+
+df2 <- 
+  data.frame(CLF16OV %>% pivot_wider(names_from=series_id,values_from=value)) %>% 
+  mutate(year=year(date),month=month(date)) %>%
+  select(-date)
+
+# merge monthly labor force stats with weekly claims data by year and month
+
+df3 <- left_join(df, df2, by=c("year","month")) %>%
+  mutate(ind=row_number(),
+         ratioSA=ICSA/CLF16OV/1000,
+         ratioNSA=ICNSA/CLF16OV/1000) %>% 
+  # add some dramatic pauses for the animation in the last 2 weeks
+  mutate(ind=ifelse(date=="2020-03-21", ind+1200,ind)) %>%
+  mutate(ind=ifelse(date==max(date),ind+2500,ind))
+
+last <- max(df3$date)
+
+options(scipen=999)
+```
+
+```{r}
+co_claims <- fredr(
+  series_id = "COICLAIMS",
+  observation_start = as.Date("1967-01-01")
+)
+colnames(co_claims)[3] <- "Claims"
+```
+
+Column {data-width=500 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### CO Initial Jobless Claims
+```{r}
+datatable(co_claims %>% arrange(desc(date)),filter = 'none',extensions = "Buttons",options=list(pageLength=25,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('CO Weekly Initial Jobless Claims as of', as.character((last),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Department of Labor" ))) 
+```
+
+Column {data-width=500 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### Colorado Jobless Claims 
+```{r}
+  ggplot(data=co_claims, aes(x=date,y=Claims))+geom_line()+
+  geom_line(color="black")+
+  geom_ribbon(aes(ymin=pmin(co_claims$Claims,0), ymax=pmax(co_claims$Claims)), fill="blue", col="blue", alpha=0.5)+ 
+  theme_minimal()+
+  theme(plot.caption=element_text(hjust=0))+
+  labs(x="",y="",title="Colorado Initial Jobless Claims (thousands)",
+       caption="Source: U.S. Department of Labor.")
+
+```
+
+Employment States - CES {data-navmenu="Employment"}
+=======================================================================
+```{r}
+ur.data<-fread("https://download.bls.gov/pub/time.series/sm/sm.data.0.Current")
+states <- readxl::read_excel("BLS_codes.xlsx", sheet = "ces states")
+co_msa <- readxl::read_excel("BLS_codes.xlsx", sheet = "ces msa")
+co_ces <- readxl::read_excel("BLS_codes.xlsx", sheet = "CES CO")
+```
+```{r}
+ces_states <- left_join(ur.data, states, by=c("series_id"="code"))
+ces_states<- ces_states[!is.na(ces_states$state),]
+ces_states <- ces_states[,-5]
+ces_states$ym <- paste(ces_states$year, ces_states$period)
+
+ces_states$month <- as.numeric(substr(ces_states$period,2,3))
+ces_states$date<- as.Date(ISOdate(ces_states$year,ces_states$month,1) ) #set up date variable
+
+ces_states2 <- ces_states[,c(1,5,8,4)]
+
+
+ces_states2 <- 
+  ces_states2  %>% 
+  group_by(state) %>% 
+  mutate(monthly_change = value - lag(value, 1), yearly_change=value - lag(value,12) , monthly_percent_change = (value/lag(value,1)-1)*100, yearly_percent_change = (value/lag(value,12)-1)*100) %>% 
+  na.omit()
+
+ces_states3 <- filter(ces_states2, date==max(ces_states2$date))
+ces_states3 <- ces_states3[-9,]# get rid of DC
+ces_states3 <- ces_states3 %>% group_by(date) %>%  mutate(mnthly_chnge_rank= dense_rank(desc(monthly_percent_change)))
+ces_states3 <- ces_states3 %>% group_by(date) %>%  mutate(yearly_chnge_rank= dense_rank(desc(yearly_percent_change)))
+ces_states3 [,"monthly_change"] <- round(ces_states3[,"monthly_change"],2)
+ces_states3 [,"yearly_change"] <- round(ces_states3[,"yearly_change"],2)
+ces_states3 [,"yearly_percent_change"] <- round(ces_states3[,"yearly_percent_change"],4)
+ces_states3 [,"monthly_percent_change"] <- round(ces_states3[,"monthly_percent_change"],4)
+
+ces.list <- max(ces_states2$date)
+
+ces_states4 <- ces_states2[,c(1:4)]
+ces_states4 <- spread(ces_states4, key = date, value = value)
+```
+
+Column {data-width=500 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### States (monthly) - Most Recent
+```{r}
+library(DT)
+datatable(ces_states3,filter = 'none',extensions = "Buttons",options=list(pageLength=25,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('State Employment, thousands - CES (SA) as of', as.character((ces.list),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, CES" ))) 
+```
+
+### Historical (monthly)
+```{r}
+library(DT)
+datatable(ces_states4,filter = 'none',extensions = "Buttons",options=list(pageLength=25,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('State Employment, thousands - CES (SA) as of', as.character((ces.list),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, CES" ))) 
+```
+
+### States (annual) - Most Recent
+```{r}
+states_ces_a <- readxl::read_excel("BLS_codes.xlsx", sheet = "CES states A SA")
+states_ces_annual <- left_join(states_ces_a, ur.data, by=c("code"="series_id"))
+
+states_ces_annual <- states_ces_annual %>% filter(period=="M13")
+states_ces_annual$date<- as.Date(ISOdate(states_ces_annual$year,1,1) )
+states_ces_annual <- states_ces_annual[,c(1:3,5,7)]
+
+states_ces_annual2 <- 
+  states_ces_annual  %>% 
+  group_by(state) %>% 
+  mutate(yearly_change=value - lag(value,1) , yearly_percent_change = (value/lag(value,1)-1)*100) %>% 
+  na.omit()
+
+max_year <- max(states_ces_annual$date)
+max_year2 <- substr(max_year, start = 1, stop = 4)
+states_ces_annual3 <- states_ces_annual2 %>%  filter(date==max_year)
+states_ces_annual3 <- states_ces_annual3[-9,-5]# get rid of DC
+states_ces_annual3 <- states_ces_annual3 %>% group_by(year) %>%  mutate(yearly_chnge_rank= dense_rank(desc(yearly_percent_change)))
+states_ces_annual3 [,"yearly_change"] <- round(states_ces_annual3[,"yearly_change"],2)
+states_ces_annual3 [,"yearly_percent_change"] <- round(states_ces_annual3[,"yearly_percent_change"],4)
+
+states_ces_annual4 <- states_ces_annual2[,c(1:4)]
+states_ces_annual4 <- spread(states_ces_annual4, key = year, value = value)
+```
+
+```{r}
+library(DT)
+datatable(states_ces_annual3,filter = 'none',extensions = "Buttons",options=list(pageLength=25,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('State Employment, annual, thousands - CES (NSA) as of', as.character((max_year2),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, CES" ))) 
+```
+
+### Historical (annual)
+```{r}
+library(DT)
+datatable(states_ces_annual4,filter = 'none',extensions = "Buttons",options=list(pageLength=25,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('State Employment, annual, thousands - CES (NSA) as of', as.character((max_year2),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, CES" ))) 
+```
+
+Column {data-width=500 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### Percent Change YoY by State (monthly)
+
+```{r}
+ces_states3 <- ces_states3 %>% arrange(desc(yearly_percent_change)) %>%  mutate(highlight=ifelse(state=="Colorado","yes","no"))
+hchart(ces_states3,  
+                type = "bar", 
+                pointWidth = 20,
+                hcaes(x = state,
+                      y = yearly_percent_change,
+                      color= highlight),
+                showInLegend = FALSE) %>% 
+  hc_title(text = paste(ces.list, "Employment by State", sep = " ")) %>%
+  hc_subtitle(text="Yearly percent change, monthly, seasonally adjusted") %>% 
+  hc_xAxis(title= "") %>%
+  hc_yAxis(title = list(text = "Percent")) %>% 
+  hc_add_theme(hc_theme_economist()) %>% 
+  hc_exporting(enabled = TRUE) %>% 
+  hc_xAxis(step=50) %>% 
+  hc_size(height=600) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics, CES.",
+    href= "https://www.bls.gov/"
+  )
+```
+
+### Percent Change YoY by State (annual)
+
+```{r}
+states_ces_annual5 <- states_ces_annual3 %>% arrange(desc(yearly_percent_change)) %>%  mutate(highlight=ifelse(state=="Colorado","yes","no"))
+hchart(states_ces_annual5,  
+                type = "bar", 
+                pointWidth = 20,
+                hcaes(x = state,
+                      y = yearly_percent_change,
+                      color= highlight),
+                showInLegend = FALSE) %>% 
+  hc_title(text = paste(max_year2, "Employment by State", sep = " ")) %>%
+  hc_subtitle(text="Yearly percent change, annual, not seasonally adjusted") %>% 
+  hc_xAxis(title= "") %>%
+  hc_yAxis(title = list(text = "Percent")) %>% 
+  hc_add_theme(hc_theme_economist()) %>% 
+  hc_exporting(enabled = TRUE) %>% 
+  hc_xAxis(step=50) %>% 
+  hc_size(height=600) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics, CES.",
+    href= "https://www.bls.gov/"
+  )
+```
+
+### Jobs Added YoY by State (annual)
+
+```{r}
+states_ces_annual6 <- states_ces_annual3 %>% arrange(desc(yearly_change)) %>%  mutate(highlight=ifelse(state=="Colorado","yes","no"))
+hchart(states_ces_annual6,  
+                type = "bar", 
+                pointWidth = 20,
+                hcaes(x = state,
+                      y = yearly_change,
+                      color= highlight),
+                showInLegend = FALSE) %>% 
+  hc_title(text = paste(max_year2, "Employment by State", sep = " ")) %>%
+  hc_subtitle(text="Jobs Added, annual, not seasonally adjusted") %>% 
+  hc_xAxis(title= "") %>%
+  hc_yAxis(title = list(text = "Thousands")) %>% 
+  hc_add_theme(hc_theme_economist()) %>% 
+  hc_exporting(enabled = TRUE) %>% 
+  hc_xAxis(step=50) %>% 
+  hc_size(height=600) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics, CES.",
+    href= "https://www.bls.gov/"
+  )
+```
+
+Employment CO MSA - CES {data-navmenu="Employment"}
+=======================================================================
+```{r}
+ces_msa<- left_join(ur.data, co_msa, by=c("series_id"="code"))
+ces_msa<- ces_msa[!is.na(ces_msa$place),]
+ces_msa <- ces_msa[,-5]
+ces_msa$ym <- paste(ces_msa$year, ces_msa$period)
+```
+
+```{r}
+ces_msa$month <- as.numeric(substr(ces_msa$period,2,3))
+ces_msa$date<- as.Date(ISOdate(ces_msa$year,ces_msa$month,1) ) #set up date variable
+
+ces_msa2 <- ces_msa[,c(1,5,8,4)]
+
+
+ces_msa2 <- 
+  ces_msa2  %>% 
+  group_by(place) %>% 
+  mutate(monthly_change = value - lag(value, 1), yearly_change=value - lag(value,12) , monthly_percent_change = (value/lag(value,1)-1)*100, yearly_percent_change = (value/lag(value,12)-1)*100) %>% 
+  na.omit()
+
+ces_msa3 <- filter(ces_msa2, date==max(ces_msa2$date))
+ces_msa3 <- ces_msa3 %>% group_by(date) %>%  mutate(mnthly_chnge_rank= dense_rank(desc(monthly_percent_change)))
+ces_msa3 <- ces_msa3 %>% group_by(date) %>%  mutate(yearly_chnge_rank= dense_rank(desc(yearly_percent_change)))
+ces_msa3 [,"monthly_change"] <- round(ces_msa3[,"monthly_change"],2)
+ces_msa3 [,"yearly_change"] <- round(ces_msa3[,"yearly_change"],2)
+ces_msa3 [,"yearly_percent_change"] <- round(ces_msa3[,"yearly_percent_change"],4)
+ces_msa3 [,"monthly_percent_change"] <- round(ces_msa3[,"monthly_percent_change"],4)
+
+ces.list2 <- max(ces_msa3$date)
+
+ces_msa4 <- ces_msa2[,c(1:4)]
+ces_msa4 <- spread(ces_msa4, key = date, value = value)
+
+ces_msa3 <- ces_msa3 %>% mutate(color_of_bars2 = if_else(yearly_percent_change > 0, "#6495ed", "#ffe6ea") )
+```
+
+
+Column {data-width=500 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### CO MSA - Most Recent
+```{r}
+library(DT)
+datatable(ces_msa3,filter = 'none',extensions = "Buttons",options=list(pageLength=25,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('CO MSA Employment - CES (SA, thousands) as of', as.character((ces.list2),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, CES" ))) 
+
+```
+
+
+### Historical
+```{r}
+library(DT)
+datatable(ces_msa4,filter = 'none',extensions = "Buttons",options=list(pageLength=25,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('CO MSA Employment - CES (SA, thousands) as of', as.character((ces.list2),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, CES" )))
+```
+
+Column {data-width=500 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### Percent Change YoY by MSA
+
+```{r}
+ces_msa3 <- ces_msa3 %>% arrange(desc(yearly_percent_change))
+hchart(ces_msa3 %>% filter(place!="Colorado"),  
+                type = "bar", 
+                pointWidth = 30,
+                hcaes(x = place,
+                      y = yearly_percent_change,
+                      color = color_of_bars2),
+                showInLegend = FALSE) %>% 
+  hc_title(text = paste(ces.list, "Employment by CO MSA", sep = " ")) %>%
+  hc_subtitle(text="Yearly percent change, seasonally adjusted") %>% 
+  hc_xAxis(title= "") %>%
+  hc_yAxis(title = list(text = "Percent")) %>% 
+  hc_add_theme(hc_theme_economist()) %>% 
+  hc_exporting(enabled = TRUE) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics, CES.",
+    href= "https://www.bls.gov/"
+  )
+```
+
+### Jobs Added by MSA
+
+```{r}
+ces_msa6 <- ces_msa3 %>% arrange(desc(yearly_change))
+hchart(ces_msa6 %>% filter(place!="Colorado"),  
+                type = "bar", 
+                pointWidth = 30,
+                hcaes(x = place,
+                      y = yearly_change,
+                      color = color_of_bars2),
+                showInLegend = FALSE) %>% 
+  hc_title(text = paste(ces.list, "Employment by CO MSA", sep = " ")) %>%
+  hc_subtitle(text="Jobs Added, YoY, seasonally adjusted, in thousands") %>% 
+  hc_xAxis(title= "") %>%
+  hc_yAxis(title = list(text = "Thousands")) %>% 
+  hc_add_theme(hc_theme_economist()) %>% 
+  hc_exporting(enabled = TRUE) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics, CES.",
+    href= "https://www.bls.gov/"
+  )
+```
+
+### Employment by MSA
+```{r}
+ces_msa2 %>% filter(place!="Colorado") %>% 
+  count(date, value) %>% 
+  hchart('line', hcaes(x = 'date', y = 'value', group = "place")) %>% hc_xAxis(title= "") %>%
+  hc_yAxis(title = list(text = "Employment (thousands)")) %>% 
+  hc_title(text = paste("Employment by CO MSA", sep = " ")) %>%
+  hc_subtitle(text=paste("Total Employed, thousands, seasonally adjusted, as of",ces.list, sep=" ")) 
+```
+
+### Employment in Current Decade
+```{r}
+ces_decade_co <- ces_msa2
+ces_decade_co$year <- substr(ces_decade_co$date,1,4)
+ces_decade_co <- ces_decade_co %>% group_by(place) %>% mutate(y=100*value/value[date=="2010-01-01"])
+ces_decade_co <- ces_decade_co %>% filter(year>2009)
+```
+
+```{r animate inflation CO plot}
+emp_decade <- 
+ggplot(data=ces_decade_co,aes(x=date,y=y,color=place,label=place))+
+  geom_line()+
+  geom_text(data=. %>% filter(date==max(date)), hjust=.5)+
+  theme(legend.position="none")+
+  scale_x_date(date_breaks="1 year", date_labels="%Y")+
+  labs(caption="Source: U.S. Bureau of Labor Statistics, Annual,not seasonally adjusted indexes. 2019 values are average through September",
+       title="Employment in Current Decade",
+       subtitle="Percent Change from January 2010",
+       y="",x="")+
+  theme(plot.title=element_text(face="bold"),
+        plot.caption=element_text(hjust=0))
+emp_decade
+```
+
+### YoY Percent Change by MSA
+```{r}
+z <- ggplot(data=ces_msa2,aes(x=date,y=yearly_percent_change,color=place))+
+    facet_wrap(~place, nrow = 2, ncol = 4)+
+    geom_line(show.legend = FALSE) +
+    geom_ribbon(alpha=0.5,aes(ymin=0,ymax=yearly_percent_change,fill=place),color=NA)+
+    geom_line(size=0.5)+
+    theme_minimal(base_size=8)+theme(legend.position="none")+  
+    theme(plot.caption=element_text(hjust=0))+
+    labs(x="", y="Percent Change",
+         subtitle=paste("Year-Over-Year Employment Change by MSA (Monthly, %, seasonally adjusted. As of ",
+                        as.character(last(ces.list),format="%b-%Y")),
+         title="Colorado Employment",
+         caption="Source: U.S. Bureau of Labor Statistics, CES.")+
+  theme(plot.title=element_text(face="bold"),
+        plot.caption=element_text(hjust=0))+
+  theme_fivethirtyeight() +theme(legend.position = "none")+
+  theme(strip.text.x = element_text(size = 9, color = "black", face = "bold.italic"),strip.text.y = element_text(size = 9, color = "black", face = "bold.italic"))
+z
+```
+
+### YoY Percent Change by MSA 2
+```{r}
+d_ends <- ces_msa2 %>% ## get last data points for each msa
+  group_by(place) %>% 
+  top_n(1, value) %>% 
+  pull(value)
+
+zz <- ggplot(data=ces_msa2,aes(x=date,y=yearly_percent_change,color=place))+
+    facet_grid(~place)+
+    geom_line(show.legend = FALSE) +
+    geom_ribbon(alpha=0.5,aes(ymin=0,ymax=yearly_percent_change,fill=place),color=NA)+
+    geom_line(size=0.5)+
+    theme_minimal(base_size=8)+theme(legend.position="none")+  
+    theme(plot.caption=element_text(hjust=0))+
+    labs(x="", y="Percent Change",
+         subtitle=paste("Year-Over-Year Employment Change by MSA (Monthly, %, seasonally adjusted. As of ",
+                        as.character(last(ces.list),format="%b-%Y")),
+         title="Colorado Employment",
+         caption="Source: U.S. Bureau of Labor Statistics, CES.")+
+  theme(plot.title=element_text(face="bold"),
+        plot.caption=element_text(hjust=0))+
+  theme_fivethirtyeight() +theme(legend.position = "none")+
+  theme(strip.text.x = element_text(size = 9, color = "black", face = "bold.italic"),strip.text.y = element_text(size = 9, color = "black", face = "bold.italic"))
+zz
+```
+
+CO Industry Employment  - CES {data-navmenu="Employment"}
+=======================================================================
+```{r}
+co_ces_ind <- left_join(co_ces, ur.data, by=c("code"="series_id"))
+
+co_ces_ind$month <- as.numeric(substr(co_ces_ind$period,2,3))
+co_ces_ind$date<- as.Date(ISOdate(co_ces_ind$year,co_ces_ind$month,1) ) #set up date variable
+
+co_ces_ind <- co_ces_ind[,c(1,2,8,5)]
+
+
+co_ces_ind2 <- 
+  co_ces_ind  %>% 
+  group_by(industry) %>% 
+  mutate(monthly_change = value - lag(value, 1), yearly_change=value - lag(value,12) , monthly_percent_change = (value/lag(value,1)-1)*100, yearly_percent_change = (value/lag(value,12)-1)*100) %>% 
+  na.omit()
+
+co_ces_ind3 <- filter(co_ces_ind2, date==max(co_ces_ind2$date))
+co_ces_ind3 [,"monthly_change"] <- round(co_ces_ind3[,"monthly_change"],2)
+co_ces_ind3 [,"yearly_change"] <- round(co_ces_ind3[,"yearly_change"],2)
+co_ces_ind3 [,"yearly_percent_change"] <- round(co_ces_ind3[,"yearly_percent_change"],4)
+co_ces_ind3 [,"monthly_percent_change"] <- round(co_ces_ind3[,"monthly_percent_change"],4)
+
+co_ces_ind3 <- co_ces_ind3 %>% mutate(color_of_bars2 = if_else(yearly_percent_change > 0, "#6495ed", "#ffe6ea") )
+
+ces.list3 <- max(co_ces_ind3$date)
+
+co_ces_ind4 <- co_ces_ind2[,c(1:4)]
+co_ces_ind4 <- spread(co_ces_ind4, key = date, value = value)
+```
+
+
+Column {data-width=500 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### CO Industry - Most Recent
+```{r}
+library(DT)
+datatable(co_ces_ind3,filter = 'none',extensions = "Buttons",options=list(pageLength=25,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('CO Industry Employment - CES (SA, thousands) as of', as.character((ces.list3),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, CES" ))) 
+
+```
+
+### Historical
+```{r}
+library(DT)
+datatable(co_ces_ind4,filter = 'none',extensions = "Buttons",options=list(pageLength=25,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('CO Industry Employment - CES (SA, thousands) as of', as.character((ces.list2),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, CES" )))
+```
+
+Column {data-width=500 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### Total Employment by Industry
+
+```{r}
+co_ces_ind5 <- co_ces_ind3
+co_ces_ind5 <- co_ces_ind5[c(5:8,12,13,16,20,23,26,27),]
+co_ces_ind5 <- co_ces_ind5 %>% arrange(desc(yearly_percent_change))
+co_ces_ind6 <- co_ces_ind5 %>% arrange(desc(value))
+
+hchart(co_ces_ind6,  
+                type = "bar", 
+                pointWidth = 30,
+                hcaes(x = industry,
+                      y = value),
+                showInLegend = FALSE) %>% 
+  hc_title(text = paste(ces.list2, "CO Industry Employment", sep = " ")) %>%
+  hc_subtitle(text="Total, seasonally adjusted") %>% 
+  hc_xAxis(title= "") %>%
+  hc_yAxis(title = list(text = "Total Employment (thousands)")) %>% 
+  hc_add_theme(hc_theme_economist()) %>% 
+  hc_exporting(enabled = TRUE) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics, CES.",
+    href= "https://www.bls.gov/"
+  )
+```
+
+### Percent Change YoY by Industry
+
+```{r}
+hchart(co_ces_ind5,  
+                type = "bar", 
+                pointWidth = 30,
+                hcaes(x = industry,
+                      y = yearly_percent_change,
+                      color = color_of_bars2),
+                showInLegend = FALSE) %>% 
+  hc_title(text = paste(ces.list2, "CO Industry Employment", sep = " ")) %>%
+  hc_subtitle(text="Yearly percent change, seasonally adjusted, in thousands") %>% 
+  hc_xAxis(title= "") %>%
+  hc_yAxis(title = list(text = "Percent")) %>% 
+  hc_add_theme(hc_theme_economist()) %>% 
+  hc_exporting(enabled = TRUE) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics, CES.",
+    href= "https://www.bls.gov/"
+  )
+```
+
+
+### Jobs Added YoY by Industry
+
+```{r}
+co_ces_ind7 <- co_ces_ind5 %>% arrange(desc(yearly_change))
+hchart(co_ces_ind7,  
+                type = "bar", 
+                pointWidth = 30,
+                hcaes(x = industry,
+                      y = yearly_change,
+                      color = color_of_bars2),
+                showInLegend = FALSE) %>% 
+  hc_title(text = paste(ces.list2, "CO Industry Employment", sep = " ")) %>%
+  hc_subtitle(text="Jobs Added, seasonally adjusted, in thousands") %>% 
+  hc_xAxis(title= "") %>%
+  hc_yAxis(title = list(text = "Thousands")) %>% 
+  hc_add_theme(hc_theme_economist()) %>% 
+  hc_exporting(enabled = TRUE) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics, CES.",
+    href= "https://www.bls.gov/"
+  )
+```
+
+Colorado Unemployment - LAUS {data-navmenu="Employment"}
+=======================================================================
+
+```{r}
+
+# Download data big file
+ur.data<-fread("https://download.bls.gov/pub/time.series/la/la.data.1.CurrentS")
+
+# Download series ids
+
+ur.series<-fread("https://download.bls.gov/pub/time.series/la/la.series")
+
+# We'll subset data
+ur.list<-ur.series[area_type_code =="A" &   #get states
+                   measure_code == "3"  &   #get unemployment rate
+                   seasonal == "S",         #get seasonally adjusted data
+                   c("series_id","area_code","series_title"),
+                   with=F]
+
+## Get state names and area crosswalk
+ur.area<-fread("https://download.bls.gov/pub/time.series/la/la.area",
+               col.names=
+                 c("area_type_code","area_code","area_text","display_level",
+                   "selectable","sort_sequence"))                   
+
+# merge data
+ur.dt<-merge(ur.data,ur.list,by="series_id",all.y=T)
+
+#create data variable
+ur.dt[,month:=as.numeric(substr(ur.dt$period,2,3))]
+ur.dt$date<- as.Date(ISOdate(ur.dt$year,ur.dt$month,1) ) #set up date variable
+ur.dt<-merge(ur.dt,ur.area[,c("area_text","area_code"),with=F],by="area_code")
+
+
+# Load national unemployment rate using quantmod and FRED database
+unrate = getSymbols('UNRATE',src='FRED', auto.assign=F) 
+unrate.df = data.frame(date=time(unrate), coredata(unrate) )
+
+# Drop some columns
+ur.dt2<-ur.dt[,c("date","area_text","value"),with=F]
+
+## rename variables
+ur.dt2<-dplyr::rename(ur.dt2, state=area_text)
+ur.dt2<-dplyr::rename(ur.dt2, ur=value)
+
+# merge national unemploymnent 
+ur.dt2<-merge(ur.dt2,unrate.df,by="date")
+ur.dt2<-dplyr::rename(ur.dt2, ur.us=UNRATE)  #rename UNRATE to ur.us
+
+ur_dt2 <- ur.dt2
+ur_dt2$year <- substr(ur_dt2$date,1,4)
+ur_dt2$month <- substr(ur_dt2$date,6,7)
+ur_dt2 <- ur_dt2 %>%group_by(year,month) %>% arrange(ur) %>%  mutate(rank=row_number())
+ur_dt3 <- filter(ur_dt2, date==max(ur_dt2$date))
+d.list2 <- max(ur_dt2$date)
+ur_dt4 <- ur_dt2 %>% filter(year>1999)
+ur_dt4$ym <- paste(ur_dt4$year,"-",ur_dt4$month)
+ur_dt4 <- ur_dt4[,c(2,3,8)]
+ur_dt4 <- ur_dt4 %>% arrange(state,ym)
+ur_dt4 <- spread(ur_dt4, key = ym, value = ur)
+
+
+co_ur2 <- ur_dt2 %>% filter(state=="Colorado") %>% filter(year>2006) %>% arrange(date)
+```
+
+Column {data-width=300 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### States - Most Recent Ranking
+
+```{r}
+library(DT)
+datatable(ur_dt3[,c(2,3)]%>% arrange(ur),filter = 'none',extensions = "Buttons",options=list(pageLength=25,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          colnames=c("State","Unemployment Rate (%)"),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('State Unemployment Rates (SA) as of', as.character((d.list2),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, LAUS" ))) 
+
+```
+
+### Historical 
+```{r}
+library(DT)
+datatable(ur_dt4,filter = 'none',extensions = "Buttons",options=list(pageLength=100,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('Colorado Unemployment Rate (SA) as of', as.character((d.list2),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, LAUS" ))) 
+```
+
+Column {data-width=500 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### States Map
+```{r}
+hcmap("countries/us/us-all", data = ur_dt3, value = "ur",
+      joinBy = c("name","state"), name = "Unemployment Rate (%)",
+      dataLabels = list(enabled = TRUE, format = '{point.name}'),
+      borderColor = "#FAFAFA", borderWidth = 0.1,
+      tooltip = list(valueDecimals = 2)) %>% 
+hc_title(text = "Unemployment Rate (%)") %>%
+  hc_subtitle(text="Seasonally adjusted") %>%
+  hc_exporting(enabled = TRUE) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics, LAUS.",
+    href= "https://www.bls.gov/news.release/empsit.nr0.htm"
+  )
+```
+
+
+### Colorado Unemployment Rate
+
+```{r}
+i<- ggplot(data=co_ur2, aes(x=date,y=ur, color=state))+
+  geom_point()+
+  theme_minimal()+
+  labs(x="",y="",title="Colorado Unemployment Rate (SA)",
+       subtitle=paste("2007-2019, Monthly, As of",
+        as.character((d.list2),format="%b-%Y")),
+       caption="Source: US Bureau of Labor Statistics")+
+  theme(legend.position = "none",
+          plot.caption=element_text(hjust=0),
+          plot.subtitle=element_text(face="italic",size=9),
+          plot.title=element_text(face="bold",size=14))
+
+ggplotly(i)
+```
+
+### Colorado Unemployment Rank
+
+```{r}
+highcharter::hchart(co_ur2,  
+                type = "line", 
+                pointWidth = 5,
+                hcaes(x = date,
+                      y = rank,
+                      color = rank),
+                name = "CO Rank") %>%
+  hc_title(text = "Colorado Unemployment Rate") %>%
+  hc_subtitle(text="Rank out of 50 States") %>%
+  hc_xAxis(title= "") %>%
+  hc_yAxis(title = list(text = "")) %>%
+  hc_exporting(enabled = TRUE) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics, LAUS.",
+    href= "https://www.bls.gov/news.release/empsit.nr0.htm"
+  ) %>% 
+  hc_add_theme(hc_theme_economist())
+```
+
+
+CO County Employment - LAUS {data-navmenu="Employment"}
+=======================================================================
+
+Column {data-width=300 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### CO Counties - Most Recent
+```{r}
+df2 <- get_bls_county()
+df3 <- df2 %>% filter(fips_state=="08")
+df3 <- df3 %>% arrange(unemployed_rate) %>% mutate(Unemployment_rate_Rank=1:nrow(df3))
+```
+
+```{r}
+library(DT)
+datatable(df3[,c(10,4,5:9,11)],filter = 'none',extensions = "Buttons",options=list(pageLength=100,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          colnames=c("FIPS","County", "Month","Labor Force", "Employed", "Unemployed","Unemployment Rate (%)","Unemployment Rate Rank"),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('County Employment (LAUS) as of', as.character((d.list2),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics, LAUS" ))) 
+```
+
+### Historical
+```{r}
+
+```
+
+Column {data-width=500 .tabset .tabset-fade} 
+-----------------------------------------------------------------------
+
+### CO Counties Unemployment Rate Map
+```{r}
+hcmap("countries/us/us-co-all", data = df3, value = "unemployed_rate",
+      joinBy = "fips", name = "Unemployment Rate (%)",
+      dataLabels = list(enabled = TRUE, format = '{point.name}'),
+      borderColor = "#FAFAFA", borderWidth = 0.1,
+      tooltip = list(valueDecimals = 2)) %>% 
+  hc_title(text = "Unemployment Rate (%)") %>%
+  hc_subtitle(text="LAUS") %>%
+  hc_exporting(enabled = TRUE) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics.",
+    href= "https://www.bls.gov/news.release/empsit.nr0.htm"
+  )
+```
+
+### Labor Force by County Map
+```{r}
+hcmap("countries/us/us-co-all", data = df3, value = "labor_force",
+      joinBy = "fips", name = "Labor Force",
+      dataLabels = list(enabled = TRUE, format = '{point.name}'),
+      borderColor = "#FAFAFA", borderWidth = 0.1,
+      tooltip = list(valueDecimals = 2)) %>% 
+  hc_title(text = "Labor Force") %>%
+  hc_subtitle(text="LAUS") %>%
+  hc_exporting(enabled = TRUE) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics.",
+    href= "https://www.bls.gov/news.release/empsit.nr0.htm"
+  )
+```
+
+### Employed by County Map
+```{r}
+hcmap("countries/us/us-co-all", data = df3, value = "employed",
+      joinBy = "fips", name = "Employed",
+      dataLabels = list(enabled = TRUE, format = '{point.name}'),
+      borderColor = "#FAFAFA", borderWidth = 0.1,
+      tooltip = list(valueDecimals = 2)) %>% 
+   hc_title(text = "Total Employed") %>%
+  hc_subtitle(text="LAUS") %>%
+  hc_exporting(enabled = TRUE) %>% 
+  hc_credits(
+    enabled=TRUE,
+    text= "Source: Bureau of Labor Statistics.",
+    href= "https://www.bls.gov/news.release/empsit.nr0.htm"
+  )
+```
+
+CO MSA Unemployment Rate - LAUS {data-navmenu="Employment"}
+=======================================================================
+
+CPI Denver MSA {data-navmenu="Inflation"}
+=======================================================================
+
+Column {data-width=300}
+-----------------------------------------------------------------------
+
+```{r inflation CO data}
+dt<- 
+  # data
+  fread('http://download.bls.gov/pub/time.series/cu/cu.data.0.Current') %>% 
+  #series ids
+  left_join(fread("http://download.bls.gov/pub/time.series/cu/cu.series"), by="series_id") %>%
+  # series names
+  left_join(fread("http://download.bls.gov/pub/time.series/cu/cu.item"),by="item_code")
+```
+
+```{r}
+denver_cpi2 <- dt %>% filter(year>2000,area_code=="S48B", seasonal=="U")  %>% 
+  group_by(series_id)%>% filter(item_name %in% c("All items","Shelter", "All items less shelter", "All items less food and energy")) %>% filter(period %in% c("M01","M03","M05","M07","M09","M11","M13")) %>% 
+  mutate(month=substr(period,2,3))
+denver_cpi2$ym <- paste(denver_cpi2$year, denver_cpi2$month)
+denver_cpi3 <- denver_cpi2[,c(23,18,4)]
+d.list3 <- max(denver_cpi3$ym)
+denver_cpi4 <- spread(denver_cpi3, key = ym, value = value)
+```
+
+```{r}
+dt2<- 
+  # data
+  fread('http://download.bls.gov/pub/time.series/cu/cu.data.2.Summaries') %>% 
+  #series ids
+  left_join(fread("http://download.bls.gov/pub/time.series/cu/cu.series"), by="series_id") %>%
+  # series names
+  left_join(fread("http://download.bls.gov/pub/time.series/cu/cu.item"),by="item_code")
+
+denver_cpi_2019 <- dt2 %>% filter(year==2019,area_code=="S48B", seasonal=="U")  %>% 
+  group_by(series_id)%>%
+  mutate(month=substr(period,2,3)) 
+denver_cpi_2019 <- denver_cpi_2019 %>% group_by(series_id) %>% mutate(avg=mean(value))
+denver_cpi_2019 <- distinct(denver_cpi_2019, series_id, .keep_all = TRUE)
+denver_cpi_2019 <- denver_cpi_2019 %>% filter(period=="M01")
+denver_cpi_2019$value <- denver_cpi_2019$avg
+denver_cpi_2019 <- denver_cpi_2019[,-23]
+denver_cpi_2019$period <- "S03"
+
+denver_cpi <- dt2 %>% filter(year>2000,area_code=="S48B", seasonal=="U", period=="S03")  %>% 
+  group_by(series_id)%>%
+  mutate(month=substr(period,2,3)) 
+denver_cpi <- rbind(denver_cpi, denver_cpi_2019)
+
+denver_cpi<- denver_cpi %>% group_by(item_name) %>%  mutate(y=100*value/value[year==2001&period=="S03"],
+  date=as.Date(ISOdate(year,as.numeric(substr(period,2,3)),1) ) ) %>% 
+  ungroup()
+```
+
+### Table
+
+```{r}
+datatable(denver_cpi4,filter = 'none',extensions = "Buttons",options=list(pageLength=100,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('Consumer Prices in the Denver-Aurora-Lakewood,CO Metro Area as of', as.character((d.list3),format="%b-%Y")), 
+                               htmltools::br(),htmltools::em("Source: U.S. Bureau of Labor Statistics; CPI,not seasonally adjusted indexes."))) 
+```
+
+Column {data-width=600 .tabset .tabset-fade}
+-----------------------------------------------------------------------
+
+### Denver CPI YoY Change
+```{r}
+denver_cpi5 <- dt %>% filter(year>2000,area_code=="S48B", seasonal=="U")  %>% 
+  group_by(series_id)%>% filter(item_name %in% c("All items","Shelter", "All items less shelter", "All items less food and energy")) %>% filter(period=="S03") %>% 
+  mutate(month=substr(period,2,3))
+denver_cpi5$ym <- paste(denver_cpi5$year, denver_cpi5$month)
+denver_cpi5 <- denver_cpi5  %>% arrange(ym) %>% arrange(item_name)
+denver_cpi5 <- denver_cpi5 %>% group_by(month, item_name) %>% mutate(yoy=value/lag(value)-1)
+denver_cpi5$yoy <- denver_cpi5$yoy*100
+denver_cpi5<- denver_cpi5 %>%group_by(year) %>%  group_by(item_name) %>%  mutate(
+  date=as.Date(ISOdate(year,as.numeric(substr(period,2,3)),1) ) ) %>% 
+  ungroup()
+denver_cpi5 <- denver_cpi5[,c(25,23,18,4,24)]
+d.list5 <- max(denver_cpi5$date)
+denver_cpi5<-denver_cpi5[!(is.na(denver_cpi5$yoy)),]
+```
+
+```{r}
+ggplot(data=denver_cpi5,aes(x=date,y=yoy,color=item_name))+
+    facet_wrap(~item_name,scales="free_y")+
+    geom_line() +
+    geom_ribbon(alpha=0.5,aes(ymin=0,ymax=yoy,fill=item_name),color=NA)+
+    geom_line(size=0.5)+
+    theme_minimal(base_size=8)+theme(legend.position="none")+  
+    theme(plot.caption=element_text(hjust=0))+
+    labs(x="", y="Percent Change",
+         subtitle=paste("Year-Over-Year Change by major category (Annual, not seasonally adjusted. As of ",
+                        as.character(last(d.list3),format="%b-%Y")),
+         title="Denver-Aurora-Lakewood,CO Metro Area Consumer Prices",
+         caption="Source: U.S. Bureau of Labor Statistics, not seasonally adjusted.")+
+  theme(plot.title=element_text(face="bold"),
+        plot.caption=element_text(hjust=0))
+```
+
+### Denver MSA CPI
+```{r  inflation CO plo}
+a <- 
+ggplot(data=denver_cpi,aes(x=date,y=y,color=item_code,label=item_name))+
+  geom_line()+
+  geom_text(data=. %>% filter(date==max(date)), hjust=1)+
+  theme(legend.position="none")+
+  scale_y_log10(breaks=c(75,100,125,150,175))+
+  scale_x_date(date_breaks="1 year", date_labels="%Y")+
+  labs(caption="Source: U.S. Bureau of Labor Statistics, Annual,not seasonally adjusted indexes. 2019 values are average through September",
+       title="Consumer Prices in the Denver-Aurora-Lakewood,CO Metro Area",
+       subtitle="Consumer Price index for All Urban Consumers (CPI-U) special aggregate indexes\nlog scale, Jan 2001=100",
+       y="",x="")+
+  theme(plot.title=element_text(face="bold"),
+        plot.caption=element_text(hjust=0))
+a
+```
+
+### Monthly Change
+```{r inflation CO yoy data}
+denver_cpi <- dt2 %>% filter(year>2017,area_code=="S48B", seasonal=="U")  %>% 
+  group_by(series_id)%>%
+  mutate(month=substr(period,2,3)) 
+denver_cpi <- denver_cpi[-c(133:176),]
+denver_cpi<-denver_cpi[!grepl("M13", denver_cpi$period),]
+
+denver_cpi <- denver_cpi  %>% arrange(year) %>% arrange(item_name)
+denver_cpi <- denver_cpi %>% group_by(item_name) %>% mutate(yoy=value/lag(value)-1)
+denver_cpi$yoy <- denver_cpi$yoy*100
+
+denver_cpi<- denver_cpi %>%group_by(year) %>%  group_by(item_name) %>%  mutate(
+  date=as.Date(ISOdate(year,as.numeric(substr(period,2,3)),1) ) ) %>% 
+  ungroup()
+d.list4 <- max(denver_cpi$date)
+```
+
+```{r cpi yoy co plot}
+d.list <- unique(denver_cpi$date)
+d.list2 <- unique(denver_cpi$date)
+denver_cpi<-denver_cpi[!(is.na(denver_cpi$yoy)),]
+
+ggplot(data=denver_cpi,aes(x=date,y=yoy,color=item_name))+
+    facet_wrap(~item_name,scales="free_y")+
+    geom_line()+
+    geom_ribbon(alpha=0.5,aes(ymin=0,ymax=yoy,fill=item_name),color=NA)+
+    geom_line(size=0.5)+
+    theme_minimal(base_size=8)+theme(legend.position="none")+
+    scale_x_date(limits=c(min(d.list),max(d.list2)))+  
+    theme(plot.caption=element_text(hjust=0))+
+    labs(x="", y="Percent Change",
+         subtitle=paste("by major category (% change from 2 months prior, not seasonally adjusted. As of ",
+                        as.character(last(d.list4),format="%b-%Y")),
+         title="Denver-Aurora-Lakewood,CO Metro Area Consumer Prices since 2018",
+         caption="Source: U.S. Bureau of Labor Statistics, not seasonally adjusted ")+
+  theme(plot.title=element_text(face="bold"),
+        plot.caption=element_text(hjust=0))
+```
+
+CO House Prices {data-navmenu="Housing"}
+=======================================================================
+
+Column {data-width=300}
+-----------------------------------------------------------------------
+
+```{r, fhfa pur data, include=FALSE}
+# FHFA HPI purchase only monthly
+df.hpi<-fread("https://www.fhfa.gov/DataTools/Downloads/Documents/HPI/HPI_master.csv")
+
+# get quarterly purchase-only index for the United States
+df.co <-df.hpi[frequency=="quarterly" & hpi_flavor=="purchase-only" & place_name==  "Colorado",][, hpa:=index_sa/shift(index_sa,4)-1][,date:=as.Date(ISOdate(yr,period*3,1))]
+
+# get quarterly purchase-only state indices
+df.st <- df.hpi[frequency=="quarterly" & hpi_flavor=="purchase-only" & level=="State",]
+df.st <- df.st[,date:=as.Date(ISOdate(yr,period*3,1))]
+df_st <- df.st %>% group_by(place_name) %>%  mutate(yoy=(index_sa/lag(index_sa,4)-1)*100)
+df_st <- df_st %>% group_by(date) %>% arrange(desc(yoy)) %>% mutate(rank=row_number())
+
+df_co <- df.co %>% group_by(place_id) %>% mutate(hpi=index_sa/index_sa[yr==1991]) %>%ungroup() %>% data.table() 
+d.list11 <- max(df_st$date)
+df_co <- df_co %>% mutate(yoy=(index_nsa/lag(index_nsa,4)-1)*100)
+```
+
+### Table
+```{r}
+datatable(df_co[,c(7,8,10,14)]%>% arrange(desc(yr)),filter = 'none',extensions = "Buttons",options=list(pageLength=100,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          colnames=c("Year","Quarter", "Index (SA)", "YoY Change (%)"),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('CO FHFA Purchase-Only Index (SA), (annual, indexed 1991=1) as of',
+                      as.character((d.list11))), 
+                               htmltools::br(),htmltools::em("Source: FHFA purchase-only house price index (SA), 1st quarter of each year"))) 
+```
+
+Column {data-width=500 .tabset .tabset-fade}
+-----------------------------------------------------------------------
+### FHFA Purchase Only Index, CO
+```{r}
+ggplot(data=df_co, aes(x=date,y=hpi,fill=hpi))+
+  geom_line(size=.8,color="#ffc425")+
+  theme_minimal()+
+  labs(x="",y="",title="CO House Prices",
+       subtitle="FHFA Purchase-Only Index (SA), (annual, indexed 1991=1)",
+       caption="Source: FHFA purchase-only house price index (SA)")+
+  theme(legend.position="top",
+          plot.caption=element_text(hjust=0),
+          plot.subtitle=element_text(face="italic",size=9),
+          plot.title=element_text(face="bold",size=14))
+```
+
+### YoY Change in House Prices, CO
+```{r}
+ggplot(data=df_co, aes(x=date,y=yoy))+
+  geom_line(size=.8,color="#ffc425")+
+  theme_minimal()+
+  labs(x="",y="",title="CO House Price Growth",
+       subtitle="12-month percent change",
+       caption="Source: FHFA purchase-only house price index (SA), quarterly")+
+  theme(legend.position="top",
+          plot.caption=element_text(hjust=0),
+          plot.subtitle=element_text(face="italic",size=9),
+          plot.title=element_text(face="bold",size=14))
+```
+
+### CO House Price Trends
+
+```{r}
+df_co2 <- df_co %>% filter(yr>1999)
+df_co2 <- df_co2 %>% filter(period==1)
+df_co2<- df_co2 %>% group_by(place_name) %>%  mutate(yoy=(index_sa/lag(index_sa,1)-1))
+ggplot(df_co2, aes(x=date, y=yoy))+ geom_bar(stat = "identity")+ 
+scale_y_continuous(labels=percent)+
+theme(legend.position="none",
+          plot.caption=element_text(hjust=0),
+          plot.subtitle=element_text(face="italic",size=9),
+          plot.title=element_text(face="bold",size=14))+
+labs(x="",y="",title="CO House Price Appreciation",
+       subtitle="12-month percent change in CO index",
+       caption="Source: FHFA purchase-only house price index (SA), annual")+
+  theme_economist()
+```
+
+
+CO House Price Growth Ranking {data-navmenu="Housing"}
+=======================================================================
+
+Column {data-width=300}
+-----------------------------------------------------------------------
+
+### Table
+```{r}
+df_st$yr <- as.numeric(df_st$yr)
+max_yr <- max(df_st$yr)
+df_st1 <- df_st %>% group_by(place_name) %>%  filter(date==max(date))
+datatable(df_st1[,c(5,11,13,12)]%>% arrange(rank),filter = 'none',extensions = "Buttons",options=list(pageLength=100,searching=T,dom="Bfrtip", buttons=c("copy", "csv", "excel","pdf")),
+          colnames=c("State","Date","Rank","YoY Change (%)"),
+          caption=htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::strong('State House Price YoY Growth Rank, as of',
+                      as.character((d.list11))), 
+                               htmltools::br(),htmltools::em("Source: FHFA purchase-only house price index (SA),indexed 1991=1"))) 
+```
+
+Column {data-width=500 .tabset .tabset-fade}
+-----------------------------------------------------------------------
+### Annual Percent Change in House Prices by State
+```{r}
+df_st1 <- df_st1 %>% mutate(highlight=ifelse(place_name=="Colorado","yes","no"))
+ggplot(df_st1, aes(x=reorder(place_id, yoy), y=yoy, fill=highlight))+   geom_bar(stat = "identity")+ 
+scale_fill_manual(values = c("yes"="yellow", "no"="steelblue"))+
+coord_flip()+theme(legend.position="none",
+          plot.caption=element_text(hjust=0),
+          plot.subtitle=element_text(face="italic",size=9),
+          plot.title=element_text(face="bold",size=14))+
+labs(x="",y="",title="House Price YoY Change (%)",
+       subtitle="FHFA Purchase-Only Index (SA)",
+       caption="Source: FHFA purchase-only house price index (SA)")
+```
+
+### State Price Trends
+```{r}
+df_st_filtered <- df_st %>% filter(place_name=="Colorado")
+spt <-ggplot(data=df_st, aes(x=date,y=yoy, group=place_name))+
+  geom_line(color="grey")+
+  geom_line(aes(date, yoy, color=place_name), data=df_st_filtered)+
+  theme_minimal()+
+  labs(x="",y="Annual % Change",title="State Price Trends",
+       subtitle="FHFA Purchase-Only Index (SA)",
+       caption="Source: FHFA purchase-only house price index (SA)")+
+  theme(legend.position="none",
+          plot.caption=element_text(hjust=0),
+          plot.subtitle=element_text(face="italic",size=9),
+          plot.title=element_text(face="bold",size=14))
+
+ggplotly(spt)
+```
+
+### Colorado YoY House Price Growth Ranking
+```{r}
+ggplot(filter(df_st,place_name=="Colorado"), aes(x=date,y=rank))+
+  geom_line(size=.8,color="#ffc425")+
+  theme_minimal()+
+  labs(x="",y="",title="CO House Price Growth Ranking",
+       subtitle="FHFA Purchase-Only Index (SA), (annual, indexed 1991=1)",
+       caption="Source: FHFA purchase-only house price index (SA)")+
+  theme(legend.position="top",
+          plot.caption=element_text(hjust=0),
+          plot.subtitle=element_text(face="italic",size=9),
+          plot.title=element_text(face="bold",size=14))+
+  theme_fivethirtyeight()
+```
